@@ -1,0 +1,1660 @@
+---
+title: "Stroke Prediction"
+author: "Cynthia Matuli"
+date: "2026-05-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+ 
+
+
+      
+      
+  **PREDICTIVE MODELLING FOR STROKE**
+
+
+Stroke is a leading cause of disability and death worldwide with LMICs accounting for three-quarters of all stroke cases. These are, however, deaths and complications that are preventable with early detection. Data Science methods such as Machine Learning predictive modelling and classification techniques including logistic regression, Gradient Boosting Trees, and Random Forest have stronger generalization and feature expression capabilities to learn and map complex nonlinear relationship between variables; and therefore, better at predicting high risk stroke patients.
+
+
+- Primary objective is to develop a predictive model for stroke.
+
+
+- Secondary objectives;
+
+  - Compare the predictive performance of:
+  
+    - Logistic regression
+    
+    - Decision tree
+    
+    - Random forest
+    
+    - XGBoost
+    
+  - Select the best-performing model.
+  
+  - Report the important predictors from that model.
+  
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  message = FALSE, warning = FALSE)
+
+```
+
+
+
+```{r results = 'hide', Libraries}
+
+library(writexl); library(openxlsx); library(tinytex); library(formatR)
+library(readxl); library(xgboost); library(caret); library(Matrix)
+library(tidyverse); library(forcats); library(stringr); library(nnet)
+library(readxl);library(dplyr);library(ggplot2);library(pROC);library(ggthemes);
+library(gtsummary);library(flextable);library(broom.helpers); library(xfun);
+library(corrplot); library(rsample); library(recipes); library(parsnip); library(tune)
+library(dials); library(yardstick); library(naniar); library(baguette)
+
+```
+
+
+
+```{r Dataset}
+
+stroke_prediction <- read_excel("ANALYSIS DATASETS/stroke_prediction.xlsx")
+View(stroke_prediction)
+
+
+#Structure of the dataset
+str(stroke_prediction)
+
+```
+
+
+
+**Understanding the dataset:
+
+  - The dataset has 5110 entries and 12 variables. 3 numerical variables and 9 categorical variables.
+  
+  - id: unique identifier
+  
+  - gender: "Male", "Female" or "Other"
+  
+  - age: age of the patient
+  
+  - hypertension: 0 if the patient does not have hypertension, 1 if the patient has hypertension
+  
+  - heart_disease: 0 if the patient does not have any heart diseases, 1 if the patient has a heart disease.
+  
+  - ever_married: "No" or "Yes".
+  
+  - work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed".
+  
+  - Residence_type: "Rural" or "Urban".
+  
+  - avg_glucose_level: average glucose level in blood.
+  
+  - bmi: body mass index
+  
+  - smoking_status: "formerly smoked", "never smoked", "smokes" or "Unknown".
+  
+  - stroke: 1 if the patient had a stroke or 0 if not.
+  
+
+
+
+```{r Glimpse of the dataset}
+
+#Overview of the unique entries of the dataset
+glimpse(stroke_prediction)
+
+
+#Summary of the variables
+stroke_prediction %>%
+summary()
+
+```
+
+
+**Analysis of the unique entries:
+
+  - bmi is read as a character yet it is a numerical variable.
+  
+  - hypertension, heart_disease, and stroke - should be converted to factor variables.
+  
+  - Age has a minimum of 0.08. Very unlikely especially for an individual likely to suffer from stroke.
+  
+  
+
+
+```{r Data completeness and duplicates}
+
+#Looking for duplicates
+stroke_prediction %>% 
+  count(id) %>% 
+  arrange(desc(n))
+
+
+#Missing values and the nature of missingness
+stroke_prediction %>% 
+  naniar::vis_miss()
+
+```
+
+
+
+  - The dataset has no duplicates.
+  
+  - There are no missing values. Further exploration of the unique entries through descriptive statistics 
+
+
+
+
+**Variable preprocessing**
+
+```{r Stroke}
+
+#Recoding stroke to read names instead of numbers
+table(stroke_prediction$stroke)
+
+stroke_prediction <- stroke_prediction %>% 
+  mutate(stroke_recorded = case_when(
+    stroke == 0 ~ "No stroke",
+    stroke == 1 ~ "Stroke",
+    TRUE ~ NA
+  )) %>% 
+  mutate(stroke_recorded = factor(stroke_recorded,
+                                  levels = c("No stroke", "Stroke"))) %>% 
+  relocate(stroke_recorded, .after = stroke)
+  
+table(stroke_prediction$stroke_recorded)
+
+```
+
+
+
+```{r Gender}
+
+#Removing 'Other' in gender since it is only 1 entry
+table(stroke_prediction$gender)
+
+stroke_prediction <- stroke_prediction %>% 
+  filter(!(gender == "Other")) %>% 
+  mutate(gender = factor(gender,
+                         levels = c("Female", "Male")))
+
+table(stroke_prediction$gender)
+
+```
+
+
+
+```{r All ages histogram}
+
+#Recoding age into groups.
+summary(stroke_prediction$age) #Minimum age is 0.08 and max is 82.0
+stroke_prediction$age <- as.numeric(stroke_prediction$age)
+
+stroke_prediction <- stroke_prediction %>% 
+  mutate(age = floor(age)) %>% #Rounding down age to remove decimals
+  arrange(age)
+
+
+#Histogram to explore age
+stroke_prediction %>% 
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "black",
+                 boundary = min(stroke_prediction$age, na.rm = TRUE)) +
+  stat_bin(binwidth = 10, 
+           geom = "text", 
+           aes(label = after_stat(count)), 
+           vjust = -0.5, 
+           boundary = min(stroke_prediction$age, 
+                          na.rm = TRUE)) +
+  labs(x = "Age (years)", y = "Age Count") +
+  theme_minimal()
+
+```
+
+
+
+Majority of the individuals are between 50-60 years.
+
+
+There are some children in the dataset and predicting their stroke chances will most likely skew or mislead the model. I will structure the dataset into several parts.
+  
+  1. Create a dataset for adults 40 years of age and above (>= 40yrs)
+  
+  2. Create a dataset for individuals >=18years of age (I'll work with this later)
+  
+
+
+```{r Age histogram}
+
+#Eliminating individuals below 40years of age
+stroke_prediction <- stroke_prediction %>% 
+  filter(age >= 40)
+
+age_histo <- stroke_prediction %>% 
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "black",
+                 boundary = min(stroke_prediction$age, na.rm = TRUE)) +
+  stat_bin(binwidth = 10, 
+           geom = "text", 
+           aes(label = after_stat(count)), 
+           vjust = -0.5, 
+           boundary = min(stroke_prediction$age, 
+                          na.rm = TRUE)) +
+  labs(x = "Age (years)", y = "Count") +
+  theme_minimal()
+
+ggsave(filename = "Distribution of age.png", plot = age_histo, width = 6, height = 4, dpi = 600)
+
+```
+
+
+
+```{r Age groups}
+
+#Recoding age into age-groups
+stroke_prediction <- stroke_prediction %>% 
+  mutate(age_group = case_when(
+    age < 45 ~ "Young adults (<45)",
+    age >= 45 & age < 65 ~ "Middle aged (45-64)",
+    age >= 65 ~ "Elderly (>=65)",
+    TRUE ~ NA
+  )) %>% 
+  mutate(age_group = factor(age_group,
+                            levels = c("Young adults (<45)", "Middle aged (45-64)", "Elderly (>=65)"))) %>% 
+  relocate(age_group, .after = age)
+
+table(stroke_prediction$stroke_recorded, stroke_prediction$age_group)
+
+```
+
+
+```{r Work type}
+
+#Exploring work type.
+table(stroke_prediction$work_type)
+
+```
+
+
+Does not show evidence of data sparsity.
+
+
+
+
+```{r bmi histogram}
+
+#Converting bmi to numeric
+class(stroke_prediction$bmi)
+stroke_prediction$bmi <- as.numeric(stroke_prediction$bmi)
+summary(stroke_prediction$bmi)
+
+
+
+#Visualizing the distribution of bmi
+bmi_histo <- stroke_prediction %>% 
+  ggplot(aes(x = bmi)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "black",
+                 boundary = min(stroke_prediction$bmi, na.rm = TRUE)) +
+  stat_bin(binwidth = 10, 
+           geom = "text", 
+           aes(label = after_stat(count)), 
+           vjust = -0.5, 
+           boundary = min(stroke_prediction$bmi, 
+                          na.rm = TRUE)) +
+  labs(x = "bmi", y = "Count") +
+  theme_minimal()
+
+ggsave(filename = "Distribution of bmi.png", plot = bmi_histo, width = 6, height = 4, dpi = 600)
+
+```
+
+
+
+- Summary of bmi: its shows 145 missing entries. I shall impute when doing feature engineering to prevent data leakage. I shall impute with the median value.
+
+- The histogram shows that bmi is skewed to the right.
+
+
+
+
+```{r bmi categories}
+
+#Recoding bmi levels into clinical ranges
+stroke_prediction <- stroke_prediction %>% 
+  mutate(bmi_weight_obesity = case_when(
+    bmi < 18.5 ~ "Underweight (<18.5)",
+    bmi >= 18.5 & bmi < 25.0 ~ "Normal (18.5-24.9)",
+    bmi >= 25.0 & bmi < 30.0 ~ "Overweight (25.0-30.0)",
+    bmi >= 30.0 ~ "Obesity (>=30.0)",
+    TRUE ~ NA
+  )) %>% 
+  mutate(bmi_weight_obesity = factor(bmi_weight_obesity,
+                                     levels = c("Obesity (>=30.0)", "Underweight (<18.5)", "Normal (18.5-24.9)", "Overweight (25.0-30.0)"))) %>% 
+  relocate(bmi_weight_obesity, .after = bmi)
+
+table(stroke_prediction$bmi_weight_obesity)
+
+table(stroke_prediction$bmi_weight_obesity, stroke_prediction$stroke_recorded)
+
+```
+
+
+- Reference for the clinical ranges: https://apps.who.int/nutrition/landscape/help.aspx?menu=0&helpid=420
+
+
+
+The recoded bmi variable based on the clinical ranges shows a high degree of data sparsity. Individuals recoded as underweight are only 25 and only 1 individual has stroke. This would lead to unstable model estimates. I will collapse this group and combine it with individuals recoded as having normal weight.
+
+
+
+```{r bmi categories collapsed}
+
+#Recoding bmi levels into clinical ranges
+stroke_prediction <- stroke_prediction %>% 
+  mutate(bmi_weight_obesity = case_when(
+    bmi < 25.0 ~ "Underweight/Normal (<25.0)",
+    bmi >= 25.0 & bmi < 30.0 ~ "Overweight (25.0-30.0)",
+    bmi >= 30.0 ~ "Obesity (>=30.0)",
+    TRUE ~ NA
+  )) %>% 
+  mutate(bmi_weight_obesity = factor(bmi_weight_obesity,
+                                     levels = c("Obesity (>=30.0)", "Underweight/Normal (<25.0)", "Overweight (25.0-30.0)"))) %>% 
+  relocate(bmi_weight_obesity, .after = bmi)
+
+table(stroke_prediction$bmi_weight_obesity)
+
+table(stroke_prediction$bmi_weight_obesity, stroke_prediction$stroke_recorded)
+
+```
+
+
+```{r Glucose level histogram}
+
+#Visualizing the distribution of average glucose level
+summary(stroke_prediction$avg_glucose_level)
+
+glucose_histo <- stroke_prediction %>% 
+  ggplot(aes(x = avg_glucose_level)) +
+  geom_histogram(binwidth = 15, fill = "steelblue", color = "black",
+                 boundary = min(stroke_prediction$avg_glucose_level, na.rm = TRUE)) +
+  stat_bin(binwidth = 15, 
+           geom = "text", 
+           aes(label = after_stat(count)), 
+           vjust = -0.5, 
+           boundary = min(stroke_prediction$avg_glucose_level, 
+                          na.rm = TRUE)) +
+  labs(x = "Average Glucose Level", y = "Count") +
+  theme_minimal()
+
+ggsave(filename = "Distribution of glucoselevels.png", plot = glucose_histo, width = 6, height = 4, dpi = 600)
+
+```
+
+
+
+The distribution is bimodal.
+
+
+
+
+```{r Glucose level}
+
+#Recoding average glucose levels into clinical ranges
+stroke_prediction <- stroke_prediction %>% 
+  mutate(avg_glucose_level_diabetes = case_when(
+    avg_glucose_level < 117 ~ "Normal (<117mg/dL)",
+    avg_glucose_level >= 117 & avg_glucose_level < 137 ~ "Prediabetes (117-136mg/dL)",
+    avg_glucose_level >= 137 ~ "Diabetes (>=137mg/dL)",
+    TRUE ~ NA
+  )) %>% 
+  mutate(avg_glucose_level_diabetes = factor(avg_glucose_level_diabetes,
+                                             levels = c("Normal (<117mg/dL)", "Prediabetes (117-136mg/dL)", "Diabetes (>=137mg/dL)"))) %>% 
+  relocate(avg_glucose_level_diabetes, .after = avg_glucose_level)
+
+table(stroke_prediction$avg_glucose_level_diabetes)
+
+```
+
+
+- Reference for the clinical ranges: https://my.clevelandclinic.org/health/diagnostics/9731-a1c
+
+
+- The groups seems okay.
+
+
+
+
+```{r Smoking status}
+
+#Recoding smoking status to smokers and non-smokers and unknown (is quite a %)
+table(stroke_prediction$smoking_status)
+
+#Combining formerly smoked and smokes into 1 group
+stroke_prediction <- stroke_prediction %>% 
+  mutate(smoking_status_recorded = case_when(
+    smoking_status == "never smoked" ~ "Non-smokers",
+    smoking_status %in% c("formerly smoked", "smokes") ~ "Smokers",
+    smoking_status == "Unknown" ~ "Unknown"
+  )) %>% 
+  mutate(smoking_status_recorded = factor(smoking_status_recorded,
+                                          levels = c("Non-smokers", "Smokers", "Unknown"))) %>% 
+  relocate(smoking_status_recorded, .after = smoking_status)
+
+table(stroke_prediction$smoking_status_recorded)
+
+```
+
+
+
+```{r Ever married}
+
+#ever_married into a factor
+table(stroke_prediction$ever_married)
+
+stroke_prediction <- stroke_prediction %>% 
+  mutate(ever_married = factor(ever_married))
+
+
+```
+
+
+- 91% of the individuals have ever been married.
+
+
+
+
+```{r Heart disease}
+
+#heart_disease
+table(stroke_prediction$heart_disease)
+
+stroke_prediction <- stroke_prediction %>% 
+  mutate(heart_disease_recorded = case_when(
+    heart_disease == 0 ~ "No",
+    heart_disease == 1 ~ "Yes",
+    TRUE ~ NA)) %>% 
+  mutate(heart_disease_recorded = factor(heart_disease_recorded,
+                                         levels = c("No", "Yes"))) %>% 
+  relocate(heart_disease_recorded, .after = heart_disease)
+
+table(stroke_prediction$heart_disease_recorded)
+
+```
+
+
+- 90% of the individuals do not have heart disease
+
+
+
+
+```{r Hypertension}
+
+#hypertension
+table(stroke_prediction$hypertension)
+
+stroke_prediction <- stroke_prediction %>% 
+  mutate(hypertension_recorded = case_when(
+    hypertension == 0 ~ "No",
+    hypertension == 1 ~ "Yes",
+    TRUE ~ NA)) %>% 
+  mutate(hypertension_recorded = factor(hypertension_recorded,
+                                         levels = c("No", "Yes"))) %>% 
+  relocate(hypertension_recorded, .after = hypertension)
+
+table(stroke_prediction$hypertension_recorded)
+
+
+```
+
+
+- 84% of the individuals do not have hypertension.
+
+
+
+
+**Assessing the association between variables and the outcome of interest**
+
+
+*Hypothesis testing*
+
+  1. Chi-square test
+  
+    - Testing whether categorical variables have any association with the outcome variable (stroke)
+    
+    - Hypothesis;
+    Null: Predictor variables have no association with the dependent variable.
+    Alternative: Predictor variables have an association with the dependent variable.
+    
+    - Significance level; 0.05
+    
+    
+    
+  2. Wilcoxon test
+  
+    - Testing whether there is a difference in the medians of numerical variables.
+    
+    - Hypothesis;
+    Null: There is no difference in the median values between groups.
+    Alternative: There is a difference in the median value between groups.
+    
+    - Significance level; 0.05
+    
+
+```{r Descriptive statistics}
+
+#Descriptive statistics
+descriptive <- stroke_prediction %>% 
+  select(gender:age_group, hypertension_recorded, heart_disease_recorded, ever_married:bmi, bmi_weight_obesity, smoking_status_recorded, stroke_recorded) %>% 
+  tbl_summary(by = stroke_recorded,
+              type = list(all_categorical() ~ "categorical"), missing = "ifany") %>% 
+  add_overall() %>% 
+  add_p()
+descriptive
+```
+
+
+
+- Gender, ever married, work type, residence type, bmi categorical, and smoking status have an insignificant association with stroke (the chi-square p-values are greater than 0.05) while age groups, hypertension, heart disease, and glucose level categorical have a significant association with stroke (chi-square p-values less than 0.05).
+
+
+- The median age of participants is 58 years with individuals with stroke having a median age of 72 and those without stroke having a median age of 57.
+
+
+- 41% of the individuals are smokers.
+
+
+- 9% have a heart disease
+
+
+- 16% have hypertension.
+
+
+- The median bmi level is 30 across both stroke and non-stroke individuals. 
+
+
+- The median average glucose level is 95. Individuals with stroke have a median level 107 while those without stroke have a median level of 94. Individuals with stroke have significantly higher glucose levels compared to individuals without stroke.
+
+
+
+
+
+```{r Correlation}
+
+#Correlation between the continuous variables
+correlation <- stroke_prediction %>% 
+  select(age, bmi, avg_glucose_level) %>% 
+  cor(use = "complete.obs", method = "pearson")
+correlation
+
+correlationplot <- corrplot(
+  correlation,
+  method = "color",
+  type = "upper", 
+  addCoef.col = "black",     # Adding correlation coefficients
+  tl.col = "black",          # Variable label color
+  tl.srt = 45               # Rotating labels
+)
+
+
+png(filename = "Correlation of variables.png", width = 6, height = 4, units = "in",
+  res = 600)
+
+corrplot(correlation, method = "color", type = "upper", addCoef.col = "black",
+  tl.col = "black", tl.srt = 45)
+
+dev.off()
+
+```
+
+
+
+
+- bmi, glucose level, and age have very weak relationships with each other.
+
+
+  - Age and bmi have a very weak negative relationship.
+  
+
+  - Age and glucose level and bmi and glucose level have a very weak positive relationship. 
+
+
+
+
+
+```{r Data completeness}
+
+#Missingness
+missing <- stroke_prediction %>% 
+  miss_var_summary()
+missing
+
+
+#Visualize
+stroke_prediction %>% 
+  arrange(desc(age)) %>% 
+  naniar::vis_miss()
+
+```
+
+
+
+- bmi has barely 5% missing values.
+
+
+
+
+
+**Train-Test Split**
+
+
+```{r Train Test data split}
+
+#Setting random seed for reproducibility
+set.seed(123)
+
+#Splitting the dataset
+dataset_split <- initial_split(stroke_prediction, prop = 0.70, strata = stroke_recorded)
+
+training_data <- dataset_split %>% 
+  training()
+
+testing_data <- dataset_split %>% 
+  testing()
+
+```
+
+
+
+
+*Determining the proportion of stroke in training, testing sets and the whole dataset*
+
+
+```{r Data split proportions of Stroke}
+
+#WHOLE DATASET
+#Proportions/distributions in the overall/main dataset
+table(stroke_prediction$stroke_recorded)
+
+
+#TRAINING SET
+table(training_data$stroke_recorded)
+#Percentages for both "No stroke" and "Stroke"
+prop.table(table(training_data$stroke_recorded))
+
+
+#TESTING SET
+table(testing_data$stroke_recorded)
+#Percentages for both "No stroke" and "Stroke"
+prop.table(table(testing_data$stroke_recorded))
+
+```
+
+
+
+**Feature Engineering**
+
+
+```{r Feature Engineering Post data split}
+#Selecting the variables I need for modelling.
+
+colnames(stroke_prediction)
+
+training_data <- training_data%>%
+  select(gender, age_group, hypertension_recorded, heart_disease_recorded, ever_married, work_type, Residence_type, avg_glucose_level_diabetes, bmi, bmi_weight_obesity, smoking_status_recorded, stroke_recorded)
+
+View(training_data)
+
+```
+
+
+
+
+
+```{r Feature engineering using recipe}
+library(themis)
+
+#bmi values are Missing Completely At Random (MCAR), therefore, it is safe to do median imputation
+
+
+#Creating a recipe and performing upsampling to deal with class imbalance
+stroke_recipe <- recipe(stroke_recorded ~ .,
+                        data = training_data) %>% 
+  step_impute_median(bmi)%>% #Median imputation
+  step_string2factor(all_categorical()) %>% #Converting categorical vars to factors
+  step_mutate(
+    bmi_weight_obesity = case_when(
+    bmi < 25.0 ~ "Underweight/Normal (<25.0)",
+    bmi >= 25.0 & bmi < 30.0 ~ "Overweight (25.0-30.0)",
+    bmi >= 30.0 ~ "Obesity (>=30.0)",
+    TRUE ~ NA
+  )) %>% 
+  step_mutate(bmi_weight_obesity = factor(bmi_weight_obesity,
+                                     levels = c("Obesity (>=30.0)",
+                                                "Underweight/Normal (<25.0)",
+                                                "Overweight (25.0-30.0)")))%>%
+  step_rm(bmi) %>%
+  step_upsample(stroke_recorded)
+  
+#Upsampling performed better than SMOTE, so I moved forward with upsampling.
+
+```
+
+
+- I have performed upsampling on the outcome variable to prevent the model from making predictions based on the majority class only.
+
+
+
+
+**LOGISTIC REGRESSION MODEL**
+
+
+```{r Logistic Regression Model}
+
+#Defining the model
+stroke_model <- logistic_reg() %>% 
+  set_engine('glm') %>% 
+  set_mode('classification')
+
+stroke_model
+
+
+library(workflows)
+#Creating a workflow
+stroke_workflow <- workflows::workflow()%>%
+  add_model(stroke_model)%>%
+  add_recipe(stroke_recipe)
+
+stroke_workflow
+
+
+#Fitting/Training the model
+stroke_workflow_fit <- stroke_workflow %>% 
+  fit(data = training_data)
+
+
+```
+
+
+  *Testing set Predictions*
+
+```{r Obtaining Logistic model predictions}
+
+#Obtaining model predictions
+logistic_class <- predict(stroke_workflow_fit,
+                          new_data = testing_data,
+                          type = "class")
+
+logistic_prob <- predict(stroke_workflow_fit,
+                         new_data = testing_data,
+                         type = "prob")
+
+logistic_predictions <- bind_cols(logistic_class,
+                                  logistic_prob,
+                                  testing_data)%>% 
+  relocate(stroke_recorded, .before = .pred_class)
+
+
+View(logistic_predictions)
+
+```
+
+
+
+
+  *Confusion matrix*
+
+```{r Logistics Confusion matrix}
+
+#Confusion matrix
+conf_mat(logistic_predictions, truth = stroke_recorded, estimate = .pred_class)
+
+
+conf_mat(logistic_predictions,
+         truth = stroke_recorded,
+         estimate = .pred_class)%>%
+  summary()
+
+```
+
+
+
+- Accuracy is not the best metric to consider because our classes are highly imbalanced. In this case **Sensitivity** (capturing true positives), **balanced accuracy** (overall performance accounting for class imbalance), **ROC AUC** (overall model discrimination), **PR AUC {Precision-Recall AUC}** (minority class performance, **F1-score** (trade-off between precision and recall) give better model evaluation)
+
+
+
+
+
+  *Model performance*
+
+```{r Logistics Model performance}
+
+library(yardstick)
+
+logistic_model_metrics <- metric_set(yardstick::sensitivity,
+                                      yardstick::bal_accuracy,
+                                      yardstick::precision,
+                                      yardstick::recall,
+                                      yardstick::f_meas,
+                                      yardstick::specificity)
+
+logistic_model_metrics(logistic_predictions,
+               truth = stroke_recorded,
+               estimate = .pred_class,
+               event_level = "second") #Stroke is the event of interest
+
+
+```
+
+
+
+```{r Evaluating model performance via ROC AUC and PR AUC}
+
+#ROC plot
+roc_logit <- logistic_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+roc_logit %>%
+  ggplot(aes(x = 1 - specificity,
+             y = sensitivity)) +
+  geom_path(linewidth = 1) +
+  geom_abline(linetype = 2, colour = "blue") +
+  coord_equal()
+
+#ROC-AUC value
+logistic_predictions %>%
+  roc_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+
+#PR AUC
+logistic_predictions %>%
+  pr_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+```
+
+
+```{r Yeah Obtaining fitted model coefficients}
+
+library(broom)
+library(dplyr)
+library(gt)
+
+results_table <- extract_fit_parsnip(stroke_workflow_fit) %>%
+  tidy(exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(`Odds Ratio` = round(estimate, 2),
+         `95% CI` = paste0(round(conf.low, 2)," – ", round(conf.high, 2)),
+         `P-value` = if_else(p.value < 0.001, "<0.001", sprintf("%.3f", p.value)),
+         Significant = if_else(p.value < 0.05, "Yes", "No")) %>%
+  arrange(p.value)%>%
+  rename(Predictor = term) 
+
+results_table %>%
+  select(Predictor, `Odds Ratio`, `95% CI`, `P-value`, Significant) %>%
+  gt() %>%
+  cols_label(Predictor = "Predictor") %>%
+  tab_header(title = md("**Multivariable Logistic Regression Model**"),
+             subtitle = "Predictors of Stroke") %>%
+  fmt_markdown(columns = everything())
+
+
+```
+
+
+
+- In the upsampled multivariable logistic regression model, age, hypertension, overweight status, heart disease, and diabetes (glucose level >=137) were among the strongest predictors of stroke.
+
+
+- In the multivariable logistic regression model;
+
+
+  - Age group was the strongest predictor of stroke.
+  
+  
+    - Compared with young adults, elderly individuals had substantially higher odds of stroke (adjusted OR = 51.63, 95% CI: 26.98–115.01, p < 0.001), while middle-aged adults also had significantly increased odds (adjusted OR = 18.26, 95% CI: 9.56–40.61, p < 0.001).
+    
+  
+  - Individuals with hypertension have 86% increased odds (95% CI: 1.55–2.23, p < 0.001) of having stroke compared to individuals without hypertension.
+  
+  
+  - Individuals with an overweight status have a 61% increased odds (95% CI: 1.28–1.77, p < 0.001) of having stroke compared to individuals who have a bmi >=30.0
+  
+  
+  -Individuals with heart disease 65% increased odds (95% CI: 1.33–2.09, p < 0.001) of having stroke compared to individuals without heart disease.
+
+
+
+
+
+**DECISION TREE MODEL**
+
+
+```{r Decision Tree}
+
+#Defining the model
+dt_stroke_model <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+dt_stroke_model
+
+
+#Specifying the workflow
+dt_stroke_workflow <- workflow() %>%
+  add_model(dt_stroke_model) %>%
+  add_recipe(stroke_recipe)
+
+dt_stroke_workflow
+
+
+#Fitting the model
+dt_stroke_model_fit <- dt_stroke_workflow %>%
+  fit(data = training_data)
+
+
+
+
+```
+
+
+
+```{r Obtaining DT model predictions}
+
+#Model predictions
+dt_class <- predict(dt_stroke_model_fit, new_data = testing_data, type = "class")
+
+dt_prob <- predict(dt_stroke_model_fit, new_data = testing_data, type = "prob")
+
+dt_predictions <- bind_cols(dt_class, dt_prob, testing_data) %>%
+  relocate(stroke_recorded, .before = .pred_class)
+
+View(dt_predictions)
+
+```
+
+
+
+
+```{r DT Confusion matrix and model performance}
+
+#Confusion matrix
+conf_mat(dt_predictions, truth = stroke_recorded, estimate = .pred_class)
+
+
+accuracy_metrics <- metric_set(
+  yardstick::sensitivity, bal_accuracy, precision, recall,f_meas, yardstick::specificity)
+
+accuracy_metrics(dt_predictions, truth = stroke_recorded, estimate = .pred_class,
+               event_level = "second") #Stroke is the event of interest
+
+
+```
+
+
+
+```{r DT AUC and ROC plot}
+
+#ROC plot
+#ROC plot
+roc_dt <- dt_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+roc_dt %>%
+  ggplot(aes(x = 1 - specificity,
+             y = sensitivity)) +
+  geom_path(linewidth = 1) +
+  geom_abline(linetype = 2, colour = "blue") +
+  coord_equal()
+
+
+#ROC-AUC value
+dt_predictions %>%
+  roc_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+#PR-AUC value
+dt_predictions %>%
+  pr_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+```
+
+
+
+```{r Decision Tree Hyperparameter tuning}
+
+dt_model_tuning <- decision_tree(
+  cost_complexity = tune(),
+  min_n = tune(),
+  tree_depth = tune()) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+dt_model_tuning
+
+
+
+#Workflow
+dt_tune_workflow <- workflow() %>%
+  add_model(dt_model_tuning) %>%
+  add_recipe(stroke_recipe)
+
+dt_tune_workflow
+
+
+#Creating a regular grid
+dt_tune_grid <- grid_regular(extract_parameter_set_dials(dt_model_tuning), levels = 5)
+
+
+#Cross validation to select the best hyperparameters
+set.seed(123)
+
+stroke_cv_folds <- vfold_cv(training_data, v = 10)
+
+dt_tuning_results <- tune_grid(dt_tune_workflow,
+                               resamples = stroke_cv_folds,
+                               grid = dt_tune_grid,
+                               metrics = metric_set(roc_auc))
+
+#Visualization of the tuning results
+autoplot(dt_tuning_results)
+
+
+collect_metrics(dt_tuning_results)
+
+
+show_best(dt_tuning_results, metric = "roc_auc")
+
+
+#Optimal hyperparameters
+best_params <- select_best(dt_tuning_results, metric = "roc_auc")
+best_params
+
+
+#Finalizing the model and fit to make predictions
+best_specs <- finalize_model(dt_model_tuning, best_params)
+best_specs
+
+
+#Generating the final workflow
+final_dt_workflow <- dt_tune_workflow %>%
+  finalize_workflow(best_params)
+
+
+#Generating final results using the last_fit() function to train, test, make predictions and test automatically
+final_dt_results <- final_dt_workflow %>%
+  last_fit(split = dataset_split,
+           metrics = metric_set(roc_auc, pr_auc, yardstick::sensitivity, yardstick::specificity, bal_accuracy, f_meas))
+
+dt_tuned_predictions <- collect_predictions(final_dt_results)
+
+collect_metrics(final_dt_results)
+
+```
+
+
+
+
+
+
+
+**RANDOM FOREST MODEL**
+
+
+```{r Random Forest}
+library(ranger)
+
+#Defining the model
+rf_stroke_model <- rand_forest() %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+rf_stroke_model
+
+
+
+#Defining a workflow
+rf_stroke_workflow <- workflow() %>%
+  add_model(rf_stroke_model) %>%
+  add_recipe(stroke_recipe)
+
+rf_stroke_workflow
+
+
+#Model fit
+rf_stroke_model_fit <- rf_stroke_workflow %>%
+  fit(data = training_data)
+
+
+```
+
+
+```{r RF Model predictions}
+
+#Model predictions
+rf_class <- predict(rf_stroke_model_fit, new_data = testing_data, type = "class")
+
+rf_prob <- predict(rf_stroke_model_fit, new_data = testing_data, type = "prob")
+
+rf_predictions <- bind_cols(rf_class, rf_prob, testing_data) %>%
+  relocate(stroke_recorded, .before = .pred_class)
+
+View(rf_predictions)
+
+```
+
+
+
+
+```{r RF Model Evaluation}
+
+#Confusion matrix
+conf_mat(rf_predictions, truth = stroke_recorded, estimate = .pred_class)
+
+
+accuracy_metrics <- metric_set(yardstick::sensitivity, bal_accuracy, precision, recall,f_meas, yardstick::specificity)
+
+accuracy_metrics(rf_predictions, truth = stroke_recorded, estimate = .pred_class,
+               event_level = "second") #Stroke is the event of interest
+
+
+#ROC plot
+roc_rf <- rf_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+roc_rf %>%
+  ggplot(aes(x = 1 - specificity,
+             y = sensitivity)) +
+  geom_path(linewidth = 1) +
+  geom_abline(linetype = 2, colour = "blue") +
+  coord_equal()
+
+
+#ROC-AUC value
+rf_predictions %>%
+  roc_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+#PR-AUC value
+rf_predictions %>%
+  pr_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+```
+
+
+
+```{r RF Hyperparameter Tuning}
+
+rf_model_tuning <- rand_forest(mtry = tune(),
+                               min_n = tune(),
+                               trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+rf_model_tuning
+
+
+
+#Workflow
+rf_tune_workflow <- workflow() %>%
+  add_model(rf_model_tuning) %>%
+  add_recipe(stroke_recipe)
+
+rf_tune_workflow
+
+
+#Creating a random grid
+rf_params <- extract_parameter_set_dials(rf_tune_workflow) %>%
+  finalize(training_data)
+
+rf_tune_grid <- grid_random(rf_params, size = 10) #10 random hyperparameter combinations
+
+
+#Cross validation to select the best hyperparameters
+set.seed(123)
+
+stroke_cv_folds <- vfold_cv(training_data, v = 10)
+
+rf_tuning_results <- tune_grid(rf_tune_workflow,
+                               resamples = stroke_cv_folds,
+                               grid = rf_tune_grid,
+                               metrics = metric_set(roc_auc))
+
+
+collect_metrics(rf_tuning_results)
+
+
+show_best(rf_tuning_results, metric = "roc_auc")
+
+
+#Optimal hyperparameters
+best_params <- select_best(rf_tuning_results, metric = "roc_auc")
+best_params
+
+
+#Finalizing the model and fit to make predictions
+best_specs <- finalize_model(rf_model_tuning, best_params)
+best_specs
+
+
+#Generating the final workflow
+final_rf_workflow <- rf_tune_workflow %>%
+  finalize_workflow(best_params)
+
+
+#Generating final results using the last_fit() function to train, test, make predictions and test automatically
+final_rf_results <- final_rf_workflow %>%
+  last_fit(split = dataset_split,
+           metrics = metric_set(roc_auc, pr_auc, yardstick::sensitivity, yardstick::specificity, bal_accuracy, f_meas))
+
+rf_tuned_predictions <- collect_predictions(final_rf_results)
+
+collect_metrics(final_rf_results)
+
+```
+
+
+
+
+
+**XGBOOST MODEL**
+
+
+```{r XGBOOST}
+
+#Defining the model
+xgboost_model <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+xgboost_model
+
+
+
+#Defining the recipe
+xgboost_recipe <- stroke_recipe %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_predictors())
+
+
+
+#Defining the workflow
+xgboost_workflow <- workflow() %>%
+  add_model(xgboost_model) %>%
+  add_recipe(xgboost_recipe)
+
+xgboost_workflow
+
+
+
+#Fitting the model
+xgboost_workflow_fit <- xgboost_workflow %>%
+  fit(data = training_data)
+
+
+
+```
+
+
+```{r XGBOOST Model predictions}
+
+#Model predictions
+xgb_class <- predict(xgboost_workflow_fit, new_data = testing_data, type = "class")
+
+xgb_prob <- predict(xgboost_workflow_fit, new_data = testing_data, type = "prob")
+
+xgboost_predictions <- bind_cols(xgb_class, xgb_prob, testing_data) %>%
+  relocate(stroke_recorded, .before = .pred_class)
+
+View(xgboost_predictions)
+
+```
+
+
+
+```{r XGBOOST Model evaluation}
+
+#Confusion matrix
+conf_mat(xgboost_predictions, truth = stroke_recorded, estimate = .pred_class)
+
+
+accuracy_metrics <- metric_set(yardstick::sensitivity, bal_accuracy, precision, recall,f_meas, yardstick::specificity)
+
+accuracy_metrics(xgboost_predictions, truth = stroke_recorded, estimate = .pred_class,
+               event_level = "second") #Stroke is the event of interest
+
+
+#ROC plot
+roc_xgb <- xgboost_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+roc_xgb %>%
+  ggplot(aes(x = 1 - specificity,
+             y = sensitivity)) +
+  geom_path(linewidth = 1) +
+  geom_abline(linetype = 2, colour = "blue") +
+  coord_equal()
+
+
+#ROC-AUC value
+xgboost_predictions %>%
+  roc_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+#PR-AUC value
+xgboost_predictions %>%
+  pr_auc(truth = stroke_recorded, .pred_Stroke, event_level = "second")
+
+```
+
+
+
+```{r XGBOOST Hyperparameter Tuning}
+
+xgb_model_tuning <- boost_tree(mtry = tune(),
+                               min_n = tune(),
+                               trees = tune(),
+                               tree_depth = tune(),
+                               learn_rate = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+xgb_model_tuning
+
+
+
+#Workflow
+xgb_tune_workflow <- workflow() %>%
+  add_model(xgb_model_tuning) %>%
+  add_recipe(xgboost_recipe)
+
+xgb_tune_workflow
+
+
+#Creating a random grid
+xgb_params <- extract_parameter_set_dials(xgb_tune_workflow) %>%
+  finalize(training_data)
+
+xgb_tune_grid <- grid_random(xgb_params, size = 10) #10 random hyperparameter combinations
+
+
+#Cross validation to select the best hyperparameters
+set.seed(123)
+
+stroke_cv_folds <- vfold_cv(training_data, v = 10)
+
+xgb_tuning_results <- tune_grid(xgb_tune_workflow,
+                               resamples = stroke_cv_folds,
+                               grid = xgb_tune_grid,
+                               metrics = metric_set(roc_auc))
+
+
+collect_metrics(xgb_tuning_results)
+
+
+show_best(xgb_tuning_results, metric = "roc_auc")
+
+
+#Optimal hyperparameters
+best_params <- select_best(xgb_tuning_results, metric = "roc_auc")
+best_params
+
+
+#Finalizing the model and fit to make predictions
+best_specs <- finalize_model(xgb_model_tuning, best_params)
+best_specs
+
+
+#Generating the final workflow
+final_xgb_workflow <- xgb_tune_workflow %>%
+  finalize_workflow(best_params)
+
+
+#Generating final results using the last_fit() function to train, test, make predictions and test automatically
+final_xgb_results <- final_xgb_workflow %>%
+  last_fit(split = dataset_split,
+           metrics = metric_set(roc_auc, pr_auc, yardstick::sensitivity, yardstick::specificity, bal_accuracy, f_meas))
+
+collect_metrics(final_xgb_results)
+
+xgb_predictions <- collect_predictions(final_xgb_results)
+
+head(xgb_predictions)
+
+```
+
+
+
+
+**COMPARING THE MODELS PERFORMANCE**
+
+
+```{r Comparing models}
+library(yardstick)
+
+comparison_metrics <- metric_set(roc_auc, pr_auc, yardstick::sensitivity, yardstick::specificity, precision, bal_accuracy, f_meas)
+
+
+#Logistic Regression
+logistic_results <- comparison_metrics(logistic_predictions,
+                                       truth = stroke_recorded,
+                                       estimate = .pred_class,
+                                       .pred_Stroke,
+                                       event_level = "second") %>%
+  select(.metric, .estimate) %>%
+  rename(Logistic_Regression = .estimate)
+
+
+
+#Tuned Decision Tree
+dt_results <- comparison_metrics(dt_predictions,
+                                 truth = stroke_recorded,
+                                 estimate = .pred_class,
+                                 .pred_Stroke,
+                                 event_level = "second") %>%
+  select(.metric, .estimate) %>%
+  rename(Decision_Tree = .estimate)
+
+
+
+#Tuned Random Forest
+rf_results <- comparison_metrics(rf_tuned_predictions,
+                                 truth = stroke_recorded,
+                                 estimate = .pred_class,
+                                 .pred_Stroke,
+                                 event_level = "second") %>%
+  select(.metric, .estimate) %>%
+  rename(Tuned_Random_Forest = .estimate)
+
+
+
+#Tuned XGBOOST model
+xgb_results <- comparison_metrics(xgb_predictions,
+                                  truth = stroke_recorded,
+                                  estimate = .pred_class,
+                                  .pred_Stroke,
+                                  event_level = "second") %>%
+  select(.metric, .estimate) %>%
+  rename(Tuned_XGBoost = .estimate)
+
+
+#Combing them
+models_comparison <- logistic_results %>%
+  left_join(dt_results, by = ".metric") %>%
+  left_join(rf_results, by = ".metric") %>%
+  left_join(xgb_results, by = ".metric")
+
+#Comparison table
+models_comparison %>%
+  mutate(across(-.metric, ~ round(.x, 3))) %>%
+  gt() %>%
+  cols_label(
+    .metric = "Performance Metric",
+    Logistic_Regression = "Logistic\nRegression",
+    Decision_Tree = "Decision\nTree",
+    Tuned_Random_Forest = "Random\nForest",
+    Tuned_XGBoost = "XGBoost"
+  ) %>%
+  tab_header(
+    title = md("**Comparison of Final Stroke Prediction Models**"),
+    subtitle = "Performance based on the Unseen (independent) Testing Set"
+  )
+
+```
+
+
+
+
+```{r ROC AUC models comparison}
+
+# Logistic Regression ROC
+roc_logistic <- logistic_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second") %>%
+  mutate(Model = "Logistic Regression (AUC = 0.733)")
+
+
+# Decision Tree ROC
+roc_dt <- dt_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second") %>%
+  mutate(Model = "Decision Tree (AUC = 0.706)")
+
+
+# Random Forest ROC
+roc_rf <- rf_tuned_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second") %>%
+  mutate(Model = "Random Forest (AUC = 0.711)")
+
+
+# XGBOOST ROC
+roc_xgb <- xgb_predictions %>%
+  roc_curve(truth = stroke_recorded, .pred_Stroke, event_level = "second") %>%
+  mutate(Model = "XGBOOST (AUC = 0.742)")
+
+
+# Combine all ROC curves
+roc_all <- bind_rows(roc_logistic, roc_dt, roc_rf, roc_xgb)
+
+
+# Plotting ROC curves
+roc_plot <- ggplot(roc_all, aes(x = 1 - specificity, y = sensitivity, colour = Model)) +
+  geom_path(linewidth = 1.2) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", colour = "grey50") +
+  coord_equal() +
+  labs(
+    title = "Receiver Operating Characteristic (ROC) Curves",
+    subtitle = "Comparison of Final Stroke Prediction Models",
+    x = "False Positive Rate (1 − Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    colour = "Prediction Model"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"))
+
+ggsave(filename = "ROC.png", plot = roc_plot, width = 6, height = 4, dpi = 600)
+
+```
+
+
+
+*Model Performance Interpretations*
+
+
+- I compared four machine learning models/algorithms on the stroke prediction testing set.
+
+
+  - XGBoost model demonstrated the best overall predictive performance, achieving the highest ROC AUC (0.742) with a sensitivity of 0.708. The model also recorded the highest Precision-Recall AUC (0.205).
+  
+  
+  - Logistic Regression model showed competitive performance with an AUC value of 0.733 and attaining the highest sensitivity of 0.736. Although the XGBOOST model is better at discriminating between individuals with stroke and those without stroke, the logistic regression model captured more individuals with stroke compared to XGBOOST.
+  
+  
+  - The decision tree had the lowest AUC (0.706), however, it recorded the highest sensitivity (0.736) as the logistic regression model. Further, the decision tree has higher precision, balanced accuracy, F1-score compared to every other model. 
+  
+  
+- Generally, the best performing model was **XGBOOST**, followed by **Decision Tree**, **Logistic Regression**, and finally **Random Forest**.
+
+
+- While the models were able to identify a good percentage of stroke cases, the precision was fairly low accounting for the very low number of stroke cases (high class imbalance).
+  
+  
+
+
+
+
+```{r XGBOOST Feature Importance}
+
+xgb_fit <- final_xgb_results %>%
+  extract_workflow() %>%
+  extract_fit_parsnip()
+
+
+#Feature Importance Table
+importance_tbl <- vip::vi(xgb_fit)
+
+importance_tbl_clean <- importance_tbl %>%
+  mutate(Variable = case_when(
+      Variable == "age_group_Elderly" ~ "Elderly (≥65)",
+      Variable == "age_group_Middle.aged" ~ "Middle aged (45–64)",
+      Variable == "avg_glucose_level" ~ "Average glucose level",
+      Variable == "avg_glucose_level_diabetes_Diabetes....137mg.dL." ~
+        "Diabetes (≥137mg/dL)",
+      Variable == "bmi_weight_obesity_Overweight..25.0.30.0." ~
+        "Overweight (25.0–30.0)",
+      Variable == "bmi_weight_obesity_Underweight.Normal...25.0." ~
+        "Underweight/Normal (<25.0)",
+      Variable == "hypertension_recorded_Yes" ~ "Hypertension",
+      Variable == "heart_disease_recorded_Yes" ~ "Heart disease",
+      Variable == "smoking_status_recorded_Smokers" ~ "Smokers",
+      Variable == "smoking_status_recorded_Unknown" ~
+        "Smoking status unknown",
+      Variable == "gender_Male" ~ "Male",
+      Variable == "Residence_type_Urban" ~ "Urban residence",
+      Variable == "ever_married_Yes" ~ "Ever married",
+      Variable == "work_type_Private" ~ "Private employment",
+      Variable == "work_type_Self.employed" ~ "Self-employed",
+      TRUE ~ Variable)) %>%
+  arrange(desc(Importance))
+
+importance_tbl_clean
+
+
+
+#Feature Importance Plot
+
+#Method 1
+#vip::vip(xgb_fit, num_features = nrow(importance_tbl), geom = "col")
+
+
+#Method 2
+library(ggplot2)
+library(forcats)
+
+vip_plot <- importance_tbl_clean %>%
+  ggplot(aes(x = Importance, y = fct_reorder(Variable, Importance))) +
+  geom_col() +
+  labs(
+    title = "Feature Importance from Tuned XGBoost Model",
+    x = "Relative Importance (Gain)",
+    y = "Predictor") +
+  theme_minimal()
+
+
+ggsave(filename = "Feature Importance.png", plot = vip_plot, width = 6, height = 4, dpi = 600)
+
+```
+
+
+
+*Interpretation*
+
+
+- **Highly influential predictors:** Elderly age group (>=65 years), middle-aged group (45-65 years), average glucose level (Diabetic (>=137mg/dL)), heart disease, and hypertension.
+
+
+- **Lower-contributing predictors:** Smoking status, work type, gender, residence, marital status, etc.
+
+
+
